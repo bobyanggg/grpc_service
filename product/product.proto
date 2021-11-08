@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+option go_package = ".";
+
+service UserService {
+    rpc GetUserInfo (UserRequest) returns (stream UserResponse);
+}
+
+message UserRequest {
+    string keyWord = 1;
+}
+
+message UserResponse {
+    string name = 1;
+    int32 price = 2;
+    string imageURL = 3;
+    string productURL = 4;
+}
