@@ -1,3 +1,4 @@
+// $ go run main.go iphone
 package main
 
 import (

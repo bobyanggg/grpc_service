@@ -1,0 +1,1 @@
+{"username": "root", "password": "password", "addr":"127.0.0.1", "port":3306, "database":"db01", "parseTime":true}
