@@ -10,11 +10,12 @@ import (
 	"gitlab.com/leopardx602/grpc_service/model"
 	pb "gitlab.com/leopardx602/grpc_service/product"
 	"gitlab.com/leopardx602/grpc_service/sql"
-
+	"gitlab.com/leopardx602/grpc_service/worker"
 	"google.golang.org/grpc"
 )
 
 type Server struct {
+	consumer *worker.Consumer
 }
 
 type ProductGRPC struct {
@@ -25,18 +26,21 @@ type ProductGRPC struct {
 func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserInfoServer) error {
 	log.Println("Search for", in.KeyWord)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Second)
+	defer cancel()
+
 	// Search in the database.
 	products, err := sql.Select(in.KeyWord)
 	if err != nil {
 		return err
 	}
-
+	//fmt.Println(products)
 	var p ProductGRPC
-	p.Products = make(chan pb.UserResponse, 1000)
+	p.Products = make(chan pb.UserResponse)
 	p.FinishRequest = make(chan int, 1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	newProducts := make(chan *sql.Product)
+	finishChan := make(chan bool)
+	errChan := make(chan error)
 
 	if len(products) > 0 {
 		// Push the data to grpc output.
@@ -48,6 +52,7 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 					ImageURL:   product.ImageURL,
 					ProductURL: product.ProductURL,
 				}
+
 			}
 			for {
 				if len(p.Products) == 0 {
@@ -56,45 +61,46 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 				}
 			}
 		}()
+
 	} else {
-		// Search for keyword in webs
-		newProducts := make(chan sql.Product)
-		//go findtest.FindInWeb(ctx, newProducts, in.KeyWord)
 
-		go func() {
-			for product := range newProducts {
-				fmt.Println(product)
-				// Insert the data to the database.
-				product.Word = in.KeyWord
-				if err := sql.Insert(product); err != nil {
-					log.Println(err)
-				}
+		go s.consumer.Queue(in.KeyWord, errChan, newProducts, finishChan)
 
-				// Push the data to grpc output.
-				p.Products <- pb.UserResponse{
-					Name:       product.Name,
-					Price:      int32(product.Price),
-					ImageURL:   product.ImageURL,
-					ProductURL: product.ProductURL,
-				}
-			}
+		go func() error {
+
+		LOOP:
 			for {
-				if len(p.Products) == 0 {
+				select {
+				case product := <-newProducts:
+					// Push the data to grpc output.
+					p.Products <- pb.UserResponse{
+						Name:       product.Name,
+						Price:      int32(product.Price),
+						ImageURL:   product.ImageURL,
+						ProductURL: product.ProductURL,
+					}
+				case <-finishChan:
 					p.FinishRequest <- 1
 					time.Sleep(time.Second)
+					break LOOP
+				case err := <-errChan:
+					return err
 				}
+
 			}
+			return nil
+
 		}()
+
 	}
 
-	// Output
+	//output (work for from database)
 	for {
 		select {
 		case product := <-p.Products:
 			err := stream.Send(&product)
 			if err != nil {
 				log.Fatal(err)
-				return err
 			}
 		case <-p.FinishRequest:
 			log.Println("Done!")
@@ -102,20 +108,33 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 		case <-ctx.Done():
 			log.Println("Time out")
 			return nil
+		case err := <-errChan:
+			log.Fatal(err)
+			return err
 		}
 	}
 }
 
 func main() {
 	// Read the grpc config.
+	errChan := make(chan error)
 	grpcConfig, err := model.OpenJson("../config/grpc.json")
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Second)
+	defer cancel()
+
 	// GRPC service
 	grpcServer := grpc.NewServer()
-	pb.RegisterUserServiceServer(grpcServer, &Server{})
+
+	//server := &Server{}
+	consumer := worker.NewConsumer()
+	server := &Server{consumer: consumer}
+	//responsible for start consumer, start worker
+	go consumer.StartJob(ctx, errChan)
+	pb.RegisterUserServiceServer(grpcServer, server)
 	listen, err := net.Listen("tcp", fmt.Sprintf(":%v", grpcConfig["port"]))
 	if err != nil {
 		log.Fatal(err)
