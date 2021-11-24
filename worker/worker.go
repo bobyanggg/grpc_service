@@ -25,46 +25,48 @@ type Consumer struct {
 	jobsChan  map[string]chan *Job
 }
 
-// func getRandomTime() int {
-// 	rand.Seed(time.Now().UnixNano())
-// 	return rand.Intn(10)
-// }
+type Crawler interface {
+	// Find product information from the website
+	Crawl(page int, finishQuery chan bool, newProducts chan *sql.Product, wgJob *sync.WaitGroup)
+}
 
-// func withContextFunc(ctx context.Context, f func()) context.Context {
-// 	ctx, cancel := context.WithCancel(ctx)
-// 	go func() {
-// 		c := make(chan os.Signal)
-// 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-// 		defer signal.Stop(c)
-// 		select {
-// 		case <-ctx.Done():
-// 		case <-c:
-// 			cancel()
-// 			f()
-// 		}
-// 	}()
+// Start Consumer/worker and queue job
+func Queue(ctx context.Context, keyWord string, newProducts chan *sql.Product) {
+	c := NewConsumer()
 
-// 	return ctx
-// }
+	//responsible for start consumer, start worker
+	go c.StartJob(ctx)
 
-func (c *Consumer) Queue(keyWord string, errChan chan error, newProducts chan *sql.Product, finishChan chan bool) {
-	maxPage := FindMaxPage(keyWord, errChan)
+	maxPage := FindMaxPage(ctx, keyWord)
 	fmt.Println("maxPage: ", maxPage)
-	wgJob := &sync.WaitGroup{}
-	wgJob.Add(maxPage)
-	go func(maxPage int) {
+	wgJobMomo := &sync.WaitGroup{}
+	wgJobPchome := &sync.WaitGroup{}
+	wgJobMomo.Add(maxPage)
+	wgJobPchome.Add(maxPage)
 
+	//momo
+	go func(maxPage int) {
 		for i := 1; i <= maxPage; i++ {
-			input := &Job{i, "momo", keyWord, i, wgJob, newProducts}
+			input := &Job{i, "momo", keyWord, i, wgJobMomo, newProducts}
 			fmt.Println("IN QUEUE", input)
 			c.inputChan <- input
 			log.Println("already send input value:", input)
 		}
-
 	}(maxPage)
 
-	wgJob.Wait()
-	finishChan <- true
+	//pchome
+	go func(maxPage int) {
+		for i := 1; i <= maxPage; i++ {
+			inputPcHome := &Job{i, "pchome", keyWord, i, wgJobPchome, newProducts}
+			fmt.Println("IN QUEUE", inputPcHome)
+			c.inputChan <- inputPcHome
+			log.Println("already send input value:", inputPcHome)
+		}
+	}(maxPage)
+
+	wgJobPchome.Wait()
+	wgJobMomo.Wait()
+	close(newProducts)
 
 }
 
@@ -74,8 +76,7 @@ func (c Consumer) startConsumer(ctx context.Context) {
 		case job := <-c.inputChan:
 			if job.web == "momo" {
 				c.jobsChan["momo"] <- job
-			}
-			if job.web == "pchome" {
+			} else if job.web == "pchome" {
 				c.jobsChan["pchome"] <- job
 			}
 
@@ -94,20 +95,27 @@ func (c Consumer) startConsumer(ctx context.Context) {
 	}
 }
 
-func (c *Consumer) process(num int, job Job, newProducts chan *sql.Product, errChan chan error) {
+func (c *Consumer) process(num int, job Job, newProducts chan *sql.Product) {
 	// n := getRandomTime()
+	var crawler Crawler
 	finishQuery := make(chan bool)
 	n := 2
 	log.Printf("%d starting on %v, Sleeping %d seconds...\n", num, job, n)
 
-	go MomoCrawler(job.keyword, job.page, finishQuery, newProducts, errChan)
+	switch job.web {
+	case "momo":
+		crawler = NewMomoQuery(job.keyword)
+	case "pchome":
+		crawler = NewPChomeQuery(job.keyword)
+	}
+
+	go crawler.Crawl(job.page, finishQuery, newProducts, job.wgJob)
 	time.Sleep(time.Duration(n) * time.Second)
 	log.Println("finished", job.web, job.id)
-	job.wgJob.Done()
 
 }
 
-func (c *Consumer) worker(ctx context.Context, num int, wg *sync.WaitGroup, web string, errChan chan error) {
+func (c *Consumer) worker(ctx context.Context, num int, wg *sync.WaitGroup, web string) {
 	defer wg.Done()
 	log.Println("start the worker", num, web)
 	for {
@@ -117,7 +125,7 @@ func (c *Consumer) worker(ctx context.Context, num int, wg *sync.WaitGroup, web 
 				log.Println("get next job", job, "and close the worker", num, web)
 				return
 			}
-			c.process(num, *job, job.newProducts, errChan)
+			c.process(num, *job, job.newProducts)
 		case <-ctx.Done():
 			log.Println("close the worker", num)
 			return
@@ -128,52 +136,32 @@ func (c *Consumer) worker(ctx context.Context, num int, wg *sync.WaitGroup, web 
 
 const poolSize = 2
 
-func (consumer *Consumer) StartJob(ctx context.Context, errChan chan error) {
-	//keyWord := "ipad"
+func (consumer *Consumer) StartJob(ctx context.Context) {
 	webs := []string{"pchome", "momo"}
 	fmt.Println("--------------start-------------")
-	// finished := make(chan bool)
 	wg := &sync.WaitGroup{}
 
-	//make consumer
-
+	//generate job channel for each web
 	for _, val := range webs {
 		consumer.jobsChan[val] = make(chan *Job, poolSize)
 	}
 
+	//generate workers for each web
 	go func() {
 		for _, web := range webs {
 			for i := 0; i < poolSize; i++ {
 				wg.Add(1)
-				go consumer.worker(ctx, i, wg, web, errChan)
+				go consumer.worker(ctx, i, wg, web)
 			}
 		}
 	}()
 
 	go consumer.startConsumer(ctx)
 
-	// go func() {
-	// 	wgJobs.Wait()
-	// 	fmt.Println("all finished")
-	// 	close(finished)
-	// }()
-
-	// go func(maxPage int) {
-
-	// 	for i := 1; i <= maxPage; i++ {
-	// 		consumer.queue(&Job{i, "momo", keyWord, i}, wgJobs)
-	// 	}
-
-	// }(maxPage)
-
-	// <-finished
-	// finishChan <- true
-	// log.Println("Crawl over")
 }
 
 func NewConsumer() *Consumer {
 	return &Consumer{
-		// inputChan: make(chan *Job),
 		inputChan: make(chan *Job),
 		jobsChan:  make(map[string]chan *Job),
 	}
