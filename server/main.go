@@ -15,6 +15,7 @@ import (
 )
 
 type Server struct {
+	//sql.conn()
 }
 
 type ProductGRPC struct {
@@ -32,7 +33,7 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 	}
 
 	var p ProductGRPC
-	p.Products = make(chan pb.UserResponse, 1000)
+	p.Products = make(chan pb.UserResponse, 200)
 	p.FinishRequest = make(chan int, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -56,10 +57,12 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 				}
 			}
 		}()
+
 	} else {
 		// Search for keyword in webs
-		newProducts := make(chan sql.Product)
-		//go findtest.FindInWeb(ctx, newProducts, in.KeyWord)
+		newProducts := make(chan sql.Product, 200)
+
+		//go findtest.FindInWeb(stream.Context(), newProducts, in.KeyWord)
 
 		go func() {
 			for product := range newProducts {
@@ -91,6 +94,7 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 	for {
 		select {
 		case product := <-p.Products:
+
 			err := stream.Send(&product)
 			if err != nil {
 				log.Fatal(err)
