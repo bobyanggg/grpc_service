@@ -1,21 +1,19 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net"
-	"time"
 
 	"gitlab.com/leopardx602/grpc_service/model"
 	pb "gitlab.com/leopardx602/grpc_service/product"
 	"gitlab.com/leopardx602/grpc_service/sql"
-
+	"gitlab.com/leopardx602/grpc_service/worker"
 	"google.golang.org/grpc"
 )
 
 type Server struct {
-	//sql.conn()
+	consumer *worker.Consumer
 }
 
 type ProductGRPC struct {
@@ -31,13 +29,10 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 	if err != nil {
 		return err
 	}
-
+	//fmt.Println(products)
 	var p ProductGRPC
 	p.Products = make(chan pb.UserResponse, 200)
 	p.FinishRequest = make(chan int, 1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	if len(products) > 0 {
 		// Push the data to grpc output.
@@ -51,25 +46,29 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 				}
 			}
 			for {
-				if len(p.Products) == 0 {
-					p.FinishRequest <- 1
-					time.Sleep(time.Second)
+				select {
+				case <-stream.Context().Done():
+					return
+				default:
+					if len(p.Products) == 0 {
+						p.FinishRequest <- 1
+						return
+					}
 				}
 			}
 		}()
 
 	} else {
 		// Search for keyword in webs
-		newProducts := make(chan sql.Product, 200)
+		newProducts := make(chan *sql.Product, 200)
 
-		//go findtest.FindInWeb(stream.Context(), newProducts, in.KeyWord)
+		go worker.Queue(stream.Context(), in.KeyWord, newProducts)
 
 		go func() {
 			for product := range newProducts {
-				fmt.Println(product)
 				// Insert the data to the database.
 				product.Word = in.KeyWord
-				if err := sql.Insert(product); err != nil {
+				if err := sql.Insert(*product); err != nil {
 					log.Println(err)
 				}
 
@@ -82,28 +81,31 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 				}
 			}
 			for {
-				if len(p.Products) == 0 {
-					p.FinishRequest <- 1
-					time.Sleep(time.Second)
+				select {
+				case <-stream.Context().Done():
+					return
+				default:
+					if len(p.Products) == 0 {
+						p.FinishRequest <- 1
+						return
+					}
 				}
 			}
 		}()
 	}
 
-	// Output
+	//output (work for from database)
 	for {
 		select {
 		case product := <-p.Products:
-
 			err := stream.Send(&product)
 			if err != nil {
-				log.Fatal(err)
-				return err
+				log.Println(err)
 			}
 		case <-p.FinishRequest:
 			log.Println("Done!")
 			return nil
-		case <-ctx.Done():
+		case <-stream.Context().Done():
 			log.Println("Time out")
 			return nil
 		}
@@ -119,7 +121,9 @@ func main() {
 
 	// GRPC service
 	grpcServer := grpc.NewServer()
-	pb.RegisterUserServiceServer(grpcServer, &Server{})
+
+	server := &Server{}
+	pb.RegisterUserServiceServer(grpcServer, server)
 	listen, err := net.Listen("tcp", fmt.Sprintf(":%v", grpcConfig["port"]))
 	if err != nil {
 		log.Fatal(err)
