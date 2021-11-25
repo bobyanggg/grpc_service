@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,10 +12,6 @@ import (
 	"github.com/pkg/errors"
 	"gitlab.com/leopardx602/grpc_service/sql"
 )
-
-// func FindMaxPage(keyword string, errChan chan error) int {
-//  // TODO: find maxpage
-// }
 
 type PChomeQuery struct {
 	keyword string
@@ -35,6 +32,11 @@ func NewPChomeQuery(keyword string) *PChomeQuery {
 	return &PChomeQuery{
 		keyword: keyword,
 	}
+}
+
+func FindMaxPchomePage(ctx context.Context, keyword string) int {
+	// TODO : Find a suitable method
+	return 5
 }
 
 func (q *PChomeQuery) Crawl(page int, finishQuery chan bool, newProducts chan *sql.Product, wgJob *sync.WaitGroup) {

@@ -66,7 +66,7 @@ func GetSpecialData(htmlContent string, selector string) (string, error) {
 	return str, nil
 }
 
-func FindMaxPage(ctx context.Context, keyword string) int {
+func FindMaxMomoPage(ctx context.Context, keyword string) int {
 	totalPageResult := 0
 	starturl := fmt.Sprintf("https://www.momoshop.com.tw/search/searchShop.jsp?keyword=%s&searchType=1&curPage=%d", keyword, 1)
 	selector := "#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.searchPrdListArea.bookList > div.listArea > ul " //
