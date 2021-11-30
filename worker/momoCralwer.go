@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,9 +13,98 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/chromedp/chromedp"
+	"github.com/gocolly/colly"
 	"github.com/pkg/errors"
 	"gitlab.com/leopardx602/grpc_service/sql"
 )
+
+type MomoQuery struct {
+	keyword string
+}
+
+func NewMomoQuery(keyword string) *MomoQuery {
+	return &MomoQuery{
+		keyword: keyword,
+	}
+}
+
+const absoluteURL string = "https://m.momoshop.com.tw/"
+
+func (q *MomoQuery) Crawl(page int, finishQuery chan bool, newProducts chan *sql.Product, wgJob *sync.WaitGroup) {
+
+	request, err := http.NewRequest("GET", "https://m.momoshop.com.tw/search.momo", nil)
+	if err != nil {
+		log.Println(errors.Wrap(err, "Can not generate request"))
+	}
+	query := request.URL.Query()
+	query.Add("searchKeyword", q.keyword)
+	query.Set("curPage", fmt.Sprintf("%d", page))
+	request.URL.RawQuery = query.Encode()
+	startUrl := request.URL.String()
+
+	c := colly.NewCollector(
+		colly.AllowedDomains("m.momoshop.com.tw", "www.m.momoshop.com.tw"),
+	)
+
+	c.OnHTML("li[class=goodsItemLi]", func(e *colly.HTMLElement) {
+		tempProduct := sql.Product{}
+		tempProduct.Name = e.ChildText("h3.prdName")
+		tempProduct.Word = q.keyword
+		tempPrice, err := strconv.Atoi(e.ChildText("b.price"))
+		if err != nil {
+			log.Println(errors.Wrapf(err, "failed to get price of %s", tempProduct.Name))
+		}
+		tempProduct.Price = tempPrice
+		tempProduct.ProductURL = absoluteURL + e.ChildAttr("li[class=goodsItemLi] > a", "href")
+		tempProduct.ImageURL = e.ChildAttr("img.goodsImg", "src")
+		query, err := url.Parse(tempProduct.ProductURL)
+		if err != nil {
+			log.Println(errors.Wrapf(err, "failed to find Product Url of %s", tempProduct.Name))
+		}
+		querys := query.Query()
+		if tempId, ok := querys["i_code"]; ok {
+			tempProduct.ProductID = tempId[0]
+		}
+		if tempProduct.ProductID == "" {
+			log.Println(errors.Wrapf(err, "failed to find Product Url of %s", tempProduct.Name))
+		}
+		newProducts <- &tempProduct
+
+	})
+
+	c.OnRequest(func(r *colly.Request) {
+		fmt.Println("Visiting: ", r.URL.String())
+	})
+
+	err = c.Visit(startUrl)
+	if err != nil {
+		fmt.Println("fail to visit website---------", err)
+	}
+	wgJob.Done()
+
+}
+
+func FindMaxMomoPage(ctx context.Context, keyword string) int {
+	totalPageResult := 0
+	starturl := fmt.Sprintf("https://www.momoshop.com.tw/search/searchShop.jsp?keyword=%s&searchType=1&curPage=%d", keyword, 1)
+	selector := "#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.searchPrdListArea.bookList > div.listArea > ul " //
+	sel := `document.querySelector("body")`
+	fmt.Println("getting maximum page @", starturl)
+
+	html, err := GetHttpHtmlContent(starturl, selector, sel)
+
+	dom, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		log.Println(errors.Wrap(err, "failed to go query"))
+	}
+
+	dom.Find("#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.pageArea.topPage > dl > dt > span:nth-child(2)").Each(func(i int, selection *goquery.Selection) {
+		pageStr := strings.Split(selection.Text(), "/")
+		totalPage, _ := strconv.Atoi(pageStr[1])
+		totalPageResult = totalPage
+	})
+	return totalPageResult
+}
 
 func GetHttpHtmlContent(url string, selector string, sel interface{}) (string, error) {
 	options := []chromedp.ExecAllocatorOption{
@@ -46,116 +136,6 @@ func GetHttpHtmlContent(url string, selector string, sel interface{}) (string, e
 		fmt.Printf("Run err : %v\n", err)
 		return "", err
 	}
-	//log.Println(htmlContent)
 
 	return htmlContent, nil
-}
-
-//Get specific data
-func GetSpecialData(htmlContent string, selector string) (string, error) {
-	dom, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
-	if err != nil {
-		fmt.Printf("Go Query error: %v", err)
-		return "", err
-	}
-
-	var str string
-	dom.Find(selector).Each(func(i int, selection *goquery.Selection) {
-		str = selection.Text()
-	})
-	return str, nil
-}
-
-func FindMaxMomoPage(ctx context.Context, keyword string) int {
-	totalPageResult := 0
-	starturl := fmt.Sprintf("https://www.momoshop.com.tw/search/searchShop.jsp?keyword=%s&searchType=1&curPage=%d", keyword, 1)
-	selector := "#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.searchPrdListArea.bookList > div.listArea > ul " //
-	sel := `document.querySelector("body")`
-	fmt.Println("getting maximum page @", starturl)
-	html, err := GetHttpHtmlContent(starturl, selector, sel)
-	if err != nil {
-		log.Println(errors.Wrap(err, "failed to get total page"))
-	}
-
-	dom, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Println(errors.Wrap(err, "failed to go query"))
-	}
-
-	dom.Find("#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.pageArea.topPage > dl > dt > span:nth-child(2)").Each(func(i int, selection *goquery.Selection) {
-		pageStr := strings.Split(selection.Text(), "/")
-		totalPage, _ := strconv.Atoi(pageStr[1])
-		//fmt.Println("TotalPage.................................:", totalPage)
-		totalPageResult = totalPage
-	})
-	return totalPageResult
-}
-
-type MomoQuery struct {
-	keyword string
-}
-
-func NewMomoQuery(keyword string) *MomoQuery {
-	return &MomoQuery{
-		keyword: keyword,
-	}
-}
-
-func (q *MomoQuery) Crawl(page int, finishQuery chan bool, newProducts chan *sql.Product, wgJob *sync.WaitGroup) {
-	starturl := fmt.Sprintf("https://www.momoshop.com.tw/search/searchShop.jsp?keyword=%s&searchType=1&curPage=%d", q.keyword, page)
-	absoluteURL := "https://www.momoshop.com.tw/"
-	selector := "#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.searchPrdListArea.bookList > div.listArea > ul " //
-	sel := `document.querySelector("body")`
-	fmt.Println("visiting url.....", starturl)
-	html, err := GetHttpHtmlContent(starturl, selector, sel)
-	if err != nil {
-		log.Println(errors.Wrapf(err, "failed to visit url: %s", starturl))
-	}
-
-	dom, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Println(errors.Wrapf(err, "failed to create goquery"))
-	}
-
-	dom.Find("#BodyBase > div.bt_2_layout.searchbox.searchListArea.selectedtop > div.searchPrdListArea.bookList > div.listArea > ul > li").Each(func(i int, selection *goquery.Selection) {
-		tempProduct := sql.Product{}
-
-		tempProduct.Name = selection.Find("a > div.prdInfoWrap > h3.prdName").Text()
-		if tempProduct.Name == "" {
-			log.Println(errors.Wrapf(err, "failed to get price of: %s", tempProduct.Name))
-		}
-
-		tempPrice := strings.ReplaceAll(selection.Find("a > div.prdInfoWrap > p.money > span.price > b").Text(), ",", "")
-		tempProduct.Price, err = strconv.Atoi(tempPrice)
-		if err != nil {
-			log.Println(errors.Wrapf(err, "failed to get price of: %s", tempProduct.Name))
-		}
-
-		tempImage, isFound := selection.Find("img.prdImg.lazy.lazy-loaded").Attr("src")
-		if !isFound {
-			(errors.Wrapf(err, "failed to find Image of %s", tempProduct.Name))
-		}
-		tempProduct.ImageURL = tempImage
-
-		tempUrl, isFound := selection.Find("a.goodsUrl").Attr("href")
-		if !isFound {
-			log.Println(errors.Wrapf(err, "failed to find Url of %s", tempProduct.Name))
-		}
-		tempProduct.ProductURL = absoluteURL + tempUrl
-
-		query, err := url.Parse(tempProduct.ProductURL)
-		if err != nil {
-			log.Println(errors.Wrapf(err, "failed to find Product Url of %s", tempProduct.Name))
-		}
-		querys := query.Query()
-		tempProduct.ProductID = querys["i_code"][0]
-		if tempProduct.ProductID == "" {
-			log.Println(errors.Wrapf(err, "failed to find Product Url of %s", tempProduct.Name))
-		}
-
-		tempProduct.Word = q.keyword
-		newProducts <- &tempProduct
-
-	})
-	wgJob.Done()
 }

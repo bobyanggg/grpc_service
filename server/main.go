@@ -44,70 +44,33 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 					ImageURL:   product.ImageURL,
 					ProductURL: product.ProductURL,
 				}
-			}
-			for {
-				select {
-				case <-stream.Context().Done():
-					return
-				default:
-					if len(p.Products) == 0 {
-						p.FinishRequest <- 1
-						return
-					}
+				if len(p.Products) == 0 {
+					p.FinishRequest <- 1
 				}
 			}
 		}()
 
 	} else {
 		// Search for keyword in webs
-		newProducts := make(chan *sql.Product, 200)
-
-		go worker.Queue(stream.Context(), in.KeyWord, newProducts)
-
 		go func() {
-			for product := range newProducts {
-				// Insert the data to the database.
-				product.Word = in.KeyWord
-				if err := sql.Insert(*product); err != nil {
-					log.Println(err)
-				}
+			worker.Queue(stream.Context(), in.KeyWord, p.Products)
+			if len(p.Products) == 0 {
+				p.FinishRequest <- 1
 
-				// Push the data to grpc output.
-				p.Products <- pb.UserResponse{
-					Name:       product.Name,
-					Price:      int32(product.Price),
-					ImageURL:   product.ImageURL,
-					ProductURL: product.ProductURL,
-				}
-			}
-			for {
-				select {
-				case <-stream.Context().Done():
-					log.Println("close search")
-					return
-				default:
-					if len(p.Products) == 0 {
-						p.FinishRequest <- 1
-						return
-					}
-				}
 			}
 		}()
 	}
 
-	//output (work for from database)
+	//output (work for from database and web)
 	for {
 		select {
 		case product := <-p.Products:
 			err := stream.Send(&product)
 			if err != nil {
-				log.Fatal(err)
+				log.Println("client closed")
 			}
 		case <-p.FinishRequest:
 			log.Println("Done!")
-			return nil
-		case <-stream.Context().Done():
-			log.Println("Time out")
 			return nil
 		}
 	}
@@ -119,7 +82,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	// GRPC service
 	grpcServer := grpc.NewServer()
 
