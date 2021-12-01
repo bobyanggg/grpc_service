@@ -44,9 +44,19 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 					ImageURL:   product.ImageURL,
 					ProductURL: product.ProductURL,
 				}
-				if len(p.Products) == 0 {
-					p.FinishRequest <- 1
+			}
+			for {
+				select {
+				case <-stream.Context().Done():
+					log.Println("..........ctx canceled...........", stream.Context().Err())
+					return
+				default:
+					if len(p.Products) == 0 {
+						p.FinishRequest <- 1
+						return
+					}
 				}
+
 			}
 		}()
 
@@ -54,9 +64,17 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 		// Search for keyword in webs
 		go func() {
 			worker.Queue(stream.Context(), in.KeyWord, p.Products)
-			if len(p.Products) == 0 {
-				p.FinishRequest <- 1
-
+			for {
+				select {
+				case <-stream.Context().Done():
+					log.Println("..........ctx canceled...........", stream.Context().Err())
+					return
+				default:
+					if len(p.Products) == 0 {
+						p.FinishRequest <- 1
+						return
+					}
+				}
 			}
 		}()
 	}
