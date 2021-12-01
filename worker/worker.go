@@ -14,9 +14,9 @@ import (
 )
 
 type WorkerConfig struct {
-	WorkerNum    int `json:"workerNum"`
-	TotalProduct int `json:"totalProduct"`
-	SleepTime    int `json:"sleepTime"`
+	MaxProduct int `json:"maxProduct"`
+	WorkerNum  int `json:"workerNum"`
+	SleepTime  int `json:"sleepTime"`
 }
 
 type Job struct {
@@ -42,11 +42,29 @@ var webs = []string{"momo", "pchome"}
 
 // Start Consumer/worker and queue job
 func Queue(ctx context.Context, keyWord string, pProduct chan pb.UserResponse) {
+	// load config
+	jsonFile, err := os.Open("../config/worker.json")
+	if err != nil {
+		log.Fatal("faile to open json fail for creating worker: ", err)
+	}
+	log.Println("successfully opened worker config")
+	// defer the closing of our jsonFile so that we can parse it later on
+	defer jsonFile.Close()
+
+	var workerConfig WorkerConfig
+	if err := json.NewDecoder(jsonFile).Decode(&workerConfig); err != nil {
+		log.Fatal(err, "failed to decode worker config")
+		return
+	}
+
+	totalWorker := workerConfig.WorkerNum
+	sleepTime := workerConfig.SleepTime
+
 	jobsChan := make(map[string]chan *Job)
-	newProducts := make(chan *sql.Product, 200)
+	newProducts := make(chan *sql.Product, workerConfig.MaxProduct)
 
 	//responsible for start consumer, start worker
-	go startJob(ctx, jobsChan)
+	go startJob(ctx, jobsChan, totalWorker, sleepTime)
 
 	go func() {
 		for product := range newProducts {
@@ -136,27 +154,9 @@ func worker(ctx context.Context, num int, wg *sync.WaitGroup, web string, jobsCh
 	}
 }
 
-func startJob(ctx context.Context, jobsChan map[string]chan *Job) {
+func startJob(ctx context.Context, jobsChan map[string]chan *Job, totalWorker, sleepTime int) {
 	fmt.Println("--------------start-------------")
 	wg := &sync.WaitGroup{}
-
-	// open json
-	jsonFile, err := os.Open("../config/worker.json")
-	if err != nil {
-		log.Fatal("faile to open json fail for creating worker: ", err)
-	}
-	log.Println("successfully opened worker config")
-	// defer the closing of our jsonFile so that we can parse it later on
-	defer jsonFile.Close()
-
-	var workerConfig WorkerConfig
-	if err := json.NewDecoder(jsonFile).Decode(&workerConfig); err != nil {
-		log.Fatal(err, "failed to decode worker config")
-		return
-	}
-
-	totalWorker := workerConfig.WorkerNum
-	sleepTime := workerConfig.SleepTime
 
 	//generate job channel for each web
 	for _, val := range webs {

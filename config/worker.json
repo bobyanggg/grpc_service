@@ -1,1 +1,5 @@
-{"workerNum":5,"totalProduct":300,"sleepTime":2}
+{
+    "maxProduct":200,
+    "workerNum":5,
+    "sleepTime":2
+}
