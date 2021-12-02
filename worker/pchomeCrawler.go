@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -28,15 +27,45 @@ type Commodity struct {
 	Id    string `json:"Id"`
 }
 
+type PchomeMaxPageResponse struct {
+	MaxPage int `json:"totalPage"`
+}
+
 func NewPChomeQuery(keyword string) *PChomeQuery {
 	return &PChomeQuery{
 		keyword: keyword,
 	}
 }
 
-func FindMaxPchomePage(ctx context.Context, keyword string) int {
-	// TODO : Find a suitable method
-	return 5
+func FindMaxPchomePage(keyword string) int {
+	var client = &http.Client{Timeout: 10 * time.Second}
+
+	request, err := http.NewRequest("GET", "http://ecshweb.pchome.com.tw/search/v3.3/all/results?sort=rnk", nil)
+	if err != nil {
+		fmt.Println("Can not generate request")
+		fmt.Println(err)
+	}
+
+	query := request.URL.Query()
+	query.Add("q", keyword)
+
+	var maxPage PchomeMaxPageResponse
+	request.URL.RawQuery = query.Encode()
+	url := request.URL.String()
+
+	response, err := client.Get(url)
+	if err != nil {
+		fmt.Println("Can not get response")
+		fmt.Println(err)
+	}
+
+	if err := json.NewDecoder(response.Body).Decode(&maxPage); err != nil {
+		fmt.Println("Can not decode JSON")
+		fmt.Println(err)
+	}
+
+	defer response.Body.Close()
+	return maxPage.MaxPage
 }
 
 func (q *PChomeQuery) Crawl(page int, finishQuery chan bool, newProducts chan *sql.Product, wgJob *sync.WaitGroup) {
