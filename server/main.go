@@ -29,7 +29,7 @@ func (s *Server) GetUserInfo(in *pb.UserRequest, stream pb.UserService_GetUserIn
 	if err != nil {
 		return err
 	}
-	//fmt.Println(products)
+
 	var p ProductGRPC
 	p.Products = make(chan pb.UserResponse, 200)
 	p.FinishRequest = make(chan int, 1)
