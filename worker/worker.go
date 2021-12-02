@@ -115,7 +115,7 @@ func send(ctx context.Context, web, keyWord string, newProducts chan *sql.Produc
 	switch web {
 	case "momo":
 		calPage := totalWebProduct/20 + 1
-		maxMomo := FindMaxMomoPage(ctx, keyWord)
+		maxMomo := FindMaxMomoPage(keyWord)
 		if calPage > maxMomo {
 			maxPage = maxMomo
 		} else {
@@ -123,7 +123,7 @@ func send(ctx context.Context, web, keyWord string, newProducts chan *sql.Produc
 		}
 	case "pchome":
 		calPage := totalWebProduct/20 + 1
-		maxPchome := FindMaxPchomePage(ctx, keyWord)
+		maxPchome := FindMaxPchomePage(keyWord)
 		if calPage > maxPchome {
 			maxPage = maxPchome
 		} else {

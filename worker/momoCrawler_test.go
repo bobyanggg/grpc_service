@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -31,9 +30,8 @@ func Test_Crawl_Ipad(t *testing.T) {
 	}
 }
 func Test_FindMaxMomoPage_Ipad(t *testing.T) {
-	ctx := context.Background()
 	keyword := "ipad"
-	maxPage := FindMaxMomoPage(ctx, keyword)
+	maxPage := FindMaxMomoPage(keyword)
 	if maxPage < 50 {
 		t.Error("error in find momopage,page=", maxPage)
 	}

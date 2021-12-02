@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -38,7 +37,7 @@ func NewPChomeQuery(keyword string) *PChomeQuery {
 	}
 }
 
-func FindMaxPchomePage(ctx context.Context, keyword string) int {
+func FindMaxPchomePage(keyword string) int {
 	var client = &http.Client{Timeout: 10 * time.Second}
 
 	request, err := http.NewRequest("GET", "http://ecshweb.pchome.com.tw/search/v3.3/all/results?sort=rnk", nil)
