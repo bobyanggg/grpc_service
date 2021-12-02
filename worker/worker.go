@@ -2,13 +2,22 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
+	pb "gitlab.com/leopardx602/grpc_service/product"
 	"gitlab.com/leopardx602/grpc_service/sql"
 )
+
+type WorkerConfig struct {
+	WorkerNum    int `json:"workerNum"`
+	TotalProduct int `json:"totalProduct"`
+	SleepTime    int `json:"sleepTime"`
+}
 
 type Job struct {
 	id          int
@@ -29,15 +38,33 @@ type Crawler interface {
 	Crawl(page int, finishQuery chan bool, newProducts chan *sql.Product, wgJob *sync.WaitGroup)
 }
 
-//var webs = []string{"momo", "pchome"}
-var webs = []string{"pchome"}
+var webs = []string{"momo", "pchome"}
 
 // Start Consumer/worker and queue job
-func Queue(ctx context.Context, keyWord string, newProducts chan *sql.Product) {
+func Queue(ctx context.Context, keyWord string, pProduct chan pb.UserResponse) {
 	jobsChan := make(map[string]chan *Job)
+	newProducts := make(chan *sql.Product, 200)
 
 	//responsible for start consumer, start worker
 	go startJob(ctx, jobsChan)
+
+	go func() {
+		for product := range newProducts {
+			// Insert the data to the database.
+			product.Word = keyWord
+			if err := sql.Insert(*product); err != nil {
+				log.Println(err)
+			}
+
+			// Push the data to grpc output.
+			pProduct <- pb.UserResponse{
+				Name:       product.Name,
+				Price:      int32(product.Price),
+				ImageURL:   product.ImageURL,
+				ProductURL: product.ProductURL,
+			}
+		}
+	}()
 
 	for _, web := range webs {
 		send(ctx, web, keyWord, newProducts, jobsChan)
@@ -73,62 +100,75 @@ func send(ctx context.Context, web, keyWord string, newProducts chan *sql.Produc
 	wgJob.Wait()
 }
 
-func process(num int, job Job, newProducts chan *sql.Product) {
+func process(num int, job Job, newProducts chan *sql.Product, sleepTime int) {
 	// n := getRandomTime()
 	var crawler Crawler
 	finishQuery := make(chan bool)
-	n := 2
-	log.Printf("%d starting on %v, Sleeping %d seconds...\n", num, job, n)
+	log.Printf("%d starting on %v, Sleeping %d seconds...\n", num, job, sleepTime)
 
 	switch job.web {
 	case "momo":
+		// crawler = NewMomoQuery(job.keyword)
 		crawler = NewMomoQuery(job.keyword)
 	case "pchome":
 		crawler = NewPChomeQuery(job.keyword)
 	}
 
 	go crawler.Crawl(job.page, finishQuery, newProducts, job.wgJob)
-	time.Sleep(time.Duration(n) * time.Second)
 	log.Println("finished", job.web, job.id)
+	time.Sleep(time.Duration(sleepTime) * time.Second)
 
 }
 
-func worker(ctx context.Context, num int, wg *sync.WaitGroup, web string, jobsChan map[string]chan *Job) {
+func worker(ctx context.Context, num int, wg *sync.WaitGroup, web string, jobsChan map[string]chan *Job, sleepTime int) {
 	defer wg.Done()
 	log.Println("start the worker", num, web)
 	for {
 		select {
 		case job := <-jobsChan[web]:
-			if ctx.Err() != nil {
-				log.Println("get next job", job, "and close the worker", num, web)
+			// stop worker if context error
+			if ctx.Err() != nil && ctx.Err() != context.Canceled {
+				log.Println("context err", ctx.Err())
 				return
 			}
-			process(num, *job, job.newProducts)
-		case <-ctx.Done():
-			log.Println("close the worker", num)
-			return
+			process(num, *job, job.newProducts, sleepTime)
 		}
 	}
-
 }
-
-const poolSize = 2
 
 func startJob(ctx context.Context, jobsChan map[string]chan *Job) {
 	fmt.Println("--------------start-------------")
 	wg := &sync.WaitGroup{}
 
+	// open json
+	jsonFile, err := os.Open("../config/worker.json")
+	if err != nil {
+		log.Fatal("faile to open json fail for creating worker: ", err)
+	}
+	log.Println("successfully opened worker config")
+	// defer the closing of our jsonFile so that we can parse it later on
+	defer jsonFile.Close()
+
+	var workerConfig WorkerConfig
+	if err := json.NewDecoder(jsonFile).Decode(&workerConfig); err != nil {
+		log.Fatal(err, "failed to decode worker config")
+		return
+	}
+
+	totalWorker := workerConfig.WorkerNum
+	sleepTime := workerConfig.SleepTime
+
 	//generate job channel for each web
 	for _, val := range webs {
-		jobsChan[val] = make(chan *Job, poolSize)
+		jobsChan[val] = make(chan *Job, totalWorker)
 	}
 
 	//generate workers for each web
 	go func() {
 		for _, web := range webs {
-			for i := 0; i < poolSize; i++ {
+			for i := 0; i < totalWorker; i++ {
 				wg.Add(1)
-				go worker(ctx, i, wg, web, jobsChan)
+				go worker(ctx, i, wg, web, jobsChan, sleepTime)
 			}
 		}
 	}()
